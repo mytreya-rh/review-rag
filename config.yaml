@@ -1,0 +1,28 @@
+architectural_concerns:
+- upgrade-safety
+- maintainability
+- ease-of-use
+- performance-tradeoff
+- correctness
+- extensibility
+
+
+keywords:
+upgrade-safety: [upgrade, backward compatible, migration, deprecation, CRD version, conversion, storage version]
+maintainability: [refactor, readability, coupling, cohesion, duplication, testability, complexity]
+ease-of-use: [ergonomics, configuration, DX, usability, defaults, discoverability]
+performance-tradeoff: [latency, throughput, scalability, allocations, hot path, contention]
+correctness: [race condition, consistency, validation, invariant, determinism, idempotent]
+extensibility: [abstraction, interface, plugin, hook, API design, modular]
+
+
+# Retrieval defaults
+retrieval:
+top_k: 50
+min_chars: 120 # ensure context-rich chunks
+max_chars: 2000
+
+
+# Distillation run size
+batch:
+comments_limit: 400

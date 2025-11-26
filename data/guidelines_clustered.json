@@ -1,0 +1,831 @@
+[
+  {
+    "concern": "correctness",
+    "guideline": "Always use k8s.io/apimachinery/pkg/api/errors for Kubernetes API error handling; never ignore errors from API operations",
+    "rationale": "Unhandled errors from Kubernetes API interactions lead to silent failures and unpredictable behavior in production. Using the standard errors package provides idiomatic helpers like IsNotFound, IsAlreadyExists, and IsConflict that improve diagnostics and prevent cascading issues during resource operations. This establishes consistent error handling patterns for extensibility.",
+    "examples": [
+      "Use apierrors.IsNotFound(err) instead of custom string matching",
+      "Check all Get, Update, Create, and Delete operation errors explicitly",
+      "Provide contextual error messages that include resource name and operation type"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "upgrade-safety",
+    "guideline": "When Kubernetes core validation functions change signatures across versions, implement version-specific shims or build tags to maintain compatibility across supported K8s releases",
+    "rationale": "Breaking changes in upstream Kubernetes validation APIs (e.g., ValidateNodeSelector gaining parameters in v1.32, ValidateResourceRequirements renamed to ValidateContainerResourceRequirements) create hard compatibility boundaries. Code must compile and function correctly across all supported Kubernetes versions to prevent upgrade failures.",
+    "examples": [
+      "ValidateNodeSelector requires additional boolean parameter in v1.32+",
+      "ValidateResourceRequirements renamed to ValidateContainerResourceRequirements between v1.31 and v1.32",
+      "Use conditional compilation or interface abstraction layers for multi-version support"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "api-compatibility",
+    "guideline": "When changing field optionality or types in CRDs, provide defaulting mechanisms (webhooks, schema defaults, or migration paths) to prevent breaking existing stored resources",
+    "rationale": "Converting optional fields to required or changing pointer types to non-pointer types breaks compatibility with existing CRs. Without defaulting logic, upgrades will reject existing resources during updates, blocking cluster operations. Kubernetes API evolution requires smooth transitions that preserve existing workloads.",
+    "examples": [
+      "Changing IstioCSRConfig from pointer to required non-pointer type requires mutating webhook or schema defaults",
+      "Add explicit migration logic in operator code before enforcing new required fields",
+      "Test upgrade paths from previous operator versions with existing CRs"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "validation-strictness",
+    "guideline": "Implement CEL validation rules with create guards (e.g., has(oldSelf)) when checking immutability to prevent false failures during resource creation",
+    "rationale": "CEL expressions like 'self == oldSelf' fail during creation because oldSelf is null. Proper guards ensure validation only applies to updates. This prevents legitimate create operations from being blocked while maintaining desired immutability constraints for security and configuration stability.",
+    "examples": [
+      "Use 'has(oldSelf) && self != oldSelf' instead of just 'self == oldSelf'",
+      "Guard feature flag immutability checks with oldSelf existence tests",
+      "Test validation rules against both create and update scenarios"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "validation-strictness",
+    "guideline": "Enforce documented immutability constraints through x-kubernetes-validations CEL rules, not just documentation comments",
+    "rationale": "Documentation alone does not prevent invalid state transitions. CEL validation provides runtime enforcement that prevents users from disabling critical features or making unsafe configuration changes. Gaps between documentation and enforcement undermine security models and create unpredictable cluster states.",
+    "examples": [
+      "Add CEL rule to prevent disabling network policies after enablement",
+      "Enforce tech preview feature flags cannot be unset once enabled",
+      "Validate each immutable field explicitly since CEL cannot iterate fields dynamically"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "maintainability",
+    "guideline": "Ensure documentation and schema validation constraints match exactly; divergence between docs and implementation creates technical debt and user confusion",
+    "rationale": "Mismatches like documenting 253-character limits while enforcing 63 characters erode user trust and cause deployment failures. Inconsistent documentation also complicates troubleshooting and makes the system harder to understand for operators and future developers.",
+    "examples": [
+      "Namespace field documented as maxLength 253 but schema enforces 63 (correct Kubernetes limit)",
+      "Network policy documentation claiming ingress+egress generation when only egress is implemented",
+      "Review schema, code, and documentation together during CR changes"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "maintainability",
+    "guideline": "Use Kubernetes standard library functions (e.g., meta.FindStatusCondition, apierrors helpers) instead of custom implementations for common operations",
+    "rationale": "Standard library functions are well-tested, handle edge cases consistently, and receive upstream bug fixes. Custom implementations create maintenance burden and make code less idiomatic. Using standard patterns improves contributor onboarding and ensures behavior aligns with ecosystem conventions.",
+    "examples": [
+      "Use meta.FindStatusCondition instead of custom condition lookup loops",
+      "Return full status objects from polling functions rather than extracting individual fields",
+      "Leverage k8s.io/apimachinery utilities for all API object manipulations"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "maintainability",
+    "guideline": "Controllers must add Watches() for all managed resources in SetupWithManager; caching alone is insufficient for reconciliation",
+    "rationale": "Without explicit watches, controllers cannot detect external changes or deletions of managed resources, leading to undetected drift between desired and actual state. This breaks the fundamental Kubernetes operator pattern of continuous reconciliation and makes debugging state inconsistencies extremely difficult.",
+    "examples": [
+      "Add Watches clause for NetworkPolicy objects created by operator",
+      "Configure appropriate predicates to filter relevant events",
+      "Ensure all Create/Update/Delete operations have corresponding watch triggers"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "correctness",
+    "guideline": "Set owner references on all dependent resources to ensure proper garbage collection and ownership tracking",
+    "rationale": "Missing owner references prevent automatic cleanup when parent resources are deleted, causing resource leaks and operational confusion. Owner references are essential for Kubernetes lifecycle management and help operators understand resource relationships during troubleshooting.",
+    "examples": [
+      "NetworkPolicy objects must reference their parent CertManager CR as owner",
+      "All resources created by operator should have controller-runtime owner references",
+      "Verify garbage collection in deletion test cases"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "correctness",
+    "guideline": "Order reconciliation operations to perform state changes before validation; validation failures must not prevent re-reconciliation when conditions change",
+    "rationale": "Placing validation after critical state changes can create stuck states where fixing validation failures doesn't trigger recovery. Proper ordering ensures controllers follow standard reconciliation patterns where state changes trigger re-evaluation, preventing manual intervention requirements.",
+    "examples": [
+      "Update status conditions before running validation checks that depend on them",
+      "Ensure reconcile loops can recover automatically when blocking conditions are resolved",
+      "Test recovery paths from validation failure scenarios"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "config-safety",
+    "guideline": "NetworkPolicy selectors must use accurate, stable labels; prefer kubernetes.io/metadata.name over custom 'name' labels for namespace selection",
+    "rationale": "Incorrect label selectors (e.g., using 'name' instead of 'kubernetes.io/metadata.name') cause silent failures where policies don't match intended targets. Standard metadata labels are guaranteed to exist and remain stable across upgrades, preventing broken monitoring, security gaps, or connectivity issues.",
+    "examples": [
+      "Use 'kubernetes.io/metadata.name: openshift-monitoring' for monitoring namespace selection",
+      "Use 'app.kubernetes.io/instance: cert-manager' instead of 'app.kubernetes.io/name' to match all components",
+      "Avoid overly permissive rules like allowing TCP 6443 to any destination; use CIDR or selector constraints"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "config-safety",
+    "guideline": "Always modify source YAML/templates before regenerating bindata or generated artifacts; never edit generated files directly",
+    "rationale": "Direct edits to generated files are lost during regeneration, creating configuration drift and making fixes ephemeral. Updating source files ensures changes persist and maintains a single source of truth for configuration management.",
+    "examples": [
+      "Update bindata source YAML for NetworkPolicy namespace selectors before running generation",
+      "Document generation commands in Makefile or README",
+      "Add CI checks to verify generated files match sources"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "correctness",
+    "guideline": "CRD resource names must follow Kubernetes conventions: <plural>.<group> (e.g., challenges.acme.cert-manager.io, not acme.cert-manager.io)",
+    "rationale": "Malformed CRD names cause installation failures and prevent Kubernetes from mapping resources to API groups correctly. This breaks operator functionality entirely and can orphan existing resources during upgrades. Consistency between bundled CSVs and CRD manifests is essential for successful deployment.",
+    "examples": [
+      "Correct: challenges.acme.cert-manager.io",
+      "Incorrect: acme.cert-manager.io (missing plural resource prefix)",
+      "Verify CRD names match across all manifests and bundle definitions"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "upgrade-safety",
+    "guideline": "Never downgrade component versions without explicit justification, documentation, and testing; version rollbacks violate forward-upgrade assumptions",
+    "rationale": "Downgrading from 1.24.6 to 1.24.4 can corrupt state written by newer versions, break API compatibility, and violate controller assumptions. Most Kubernetes operators assume forward-only upgrades. Rollbacks require careful analysis of state migrations and explicit communication to users.",
+    "examples": [
+      "Question version changes like cert-manager 1.24.6 \u2192 1.24.4 before merge",
+      "Document migration paths and compatibility testing for any version decrease",
+      "Consider whether rollback indicates incorrect previous upgrade decision"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "ease-of-use",
+    "guideline": "Use native boolean types for flags instead of string-based 'true'/'false' values to eliminate ambiguity and improve API usability",
+    "rationale": "String-based booleans are error-prone due to typos, case variations, and parsing complexity. Native boolean types integrate better with Kubernetes tooling, client libraries, and validation logic, making the API more self-documenting and reducing user errors.",
+    "examples": [
+      "Replace string fields with 'true'/'false' values with proper boolean schema types",
+      "Simplify validation logic by removing string-to-boolean conversion code",
+      "Provide migration strategy or API versioning for breaking changes to field types"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "extensibility",
+    "guideline": "Name operator-managed resources to clearly indicate ownership and affected components; include component identifiers in user-defined resource names for debuggability",
+    "rationale": "Naming conventions like 'cert-manager-user-<component>-<name>' make it immediately apparent which workload is affected during troubleshooting. Clear naming prevents collision ambiguities, improves operational visibility, and establishes patterns for future feature additions.",
+    "examples": [
+      "Use 'cert-manager-user-controller-<name>' instead of 'cert-manager-user-<name>' for controller policies",
+      "Implement collision-safe naming that combines ComponentName and user-provided Name",
+      "Document naming conventions in API reference and operator guides"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "maintainability",
+    "guideline": "Feature configuration should use standard OLM patterns (Subscription environment variables) rather than embedding in code or operator manifests",
+    "rationale": "Centralizing addon feature flags in Subscription objects follows OLM best practices and separates deployment configuration from operator logic. This makes feature management more intuitive for administrators and establishes clear extensibility patterns, though environment variable validation must be robust to prevent runtime errors.",
+    "examples": [
+      "Define tech preview features via Subscription env vars instead of hardcoded operator settings",
+      "Validate environment variable types and values to ensure config-safety",
+      "Document that Subscription changes trigger operator restarts"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "correctness",
+    "guideline": "Validate variable references and imports through compilation checks; undefined variables (like missing rest.Config) must be caught before PR merge",
+    "rationale": "Unresolved variable references prevent compilation and block testing/deployment. Architectural choices between parameterization, extraction from existing clients, or package-level config have different testability and coupling tradeoffs that should be explicitly decided.",
+    "examples": [
+      "execInPod references undefined 'cfg' variable of type *rest.Config",
+      "Add missing k8s.io/client-go/rest import",
+      "Choose between parameterizing config, extracting from kubeClient, or declaring at package level based on testability needs"
+    ],
+    "cluster_id": 4
+  },
+  {
+    "concern": "process-quality",
+    "guideline": "PR review tooling and automation must validate that required context (diff, comment content, file paths) is present before architectural analysis can proceed.",
+    "rationale": "All captured review comments in this cluster lack substantive content, indicating a systematic failure in the review capture process. Without diff context and actual comment content, architectural analysis cannot be performed, review feedback cannot be acted upon, and institutional knowledge is lost. This represents a critical gap in the development workflow that must be addressed through tooling validation.",
+    "examples": [
+      "Review records show repeated instances of missing diff context across multiple PR IDs (2, 3, 4, 5, 6, 7, 8, 9, 11, 112, 114, 125, 126)",
+      "Comment fields are consistently empty or truncated (e.g., ID 125 shows 'Comment:' with no content)",
+      "No code changes, file paths, or specific technical feedback captured in any review record"
+    ],
+    "cluster_id": 0
+  },
+  {
+    "concern": "maintainability",
+    "guideline": "Architectural review processes must fail fast and explicitly when prerequisites are not met, rather than generating placeholder or empty review records.",
+    "rationale": "The presence of 13+ review records with identical 'no content provided' responses indicates the system continued processing despite missing critical inputs. This creates noise in the review database, obscures actual review coverage gaps, and wastes reviewer and tooling resources. Explicit validation failures would surface process issues immediately and prevent accumulation of non-actionable records.",
+    "examples": [
+      "All records contain template responses requesting the missing information rather than blocking submission",
+      "Review IDs are assigned (2-126 range) despite no substantive review occurring",
+      "No automated validation prevented empty comment submission across multiple instances"
+    ],
+    "cluster_id": 0
+  },
+  {
+    "concern": "correctness",
+    "guideline": "Review capture systems must enforce schema validation requiring non-empty diff context, comment body, and metadata before persisting review records to ensure data integrity.",
+    "rationale": "The systematic absence of required fields across all records indicates missing input validation at the data ingestion layer. Without enforced schemas, the review database becomes polluted with unusable records that cannot support post-hoc analysis, metrics collection, or architectural pattern extraction. Strong typing and validation contracts at ingestion prevent garbage-in-garbage-out scenarios.",
+    "examples": [
+      "Evidence fields are uniformly empty strings across all 13 records",
+      "Summary fields contain generic 'no data provided' messages rather than actual architectural analysis",
+      "Concerns arrays contain error messages rather than structured architectural concern labels"
+    ],
+    "cluster_id": 0
+  },
+  {
+    "concern": "ease-of-use",
+    "guideline": "Review tooling interfaces must provide clear, immediate feedback when required inputs are missing, with actionable guidance on how to provide the necessary context.",
+    "rationale": "Users attempted to submit reviews 13+ times without the required information, suggesting the tooling did not make requirements clear upfront or provide sufficient guidance. Poor UX in review tooling leads to wasted effort, frustration, and incomplete review coverage. Pre-submission validation with helpful error messages would prevent this class of failures.",
+    "examples": [
+      "Repeated identical user errors across IDs 2, 3, 4, 5, 6, 7, 8, 9, 11 suggest unclear requirements",
+      "Post-hoc error messages request 'diff context and review comment' but were not enforced at submission time",
+      "No evidence of progressive disclosure or input templates guiding users to provide complete information"
+    ],
+    "cluster_id": 0
+  },
+  {
+    "concern": "validation-lifecycle-gating",
+    "guideline": "CEL validation rules enforcing immutability must explicitly check for the existence of oldSelf to gate execution to UPDATE operations only. Never evaluate immutability constraints during CREATE operations.",
+    "rationale": "Immutability rules that lack oldSelf existence checks will fail during resource creation because there is no previous state to compare against. This breaks basic CRUD workflows and renders APIs unusable. The validation must distinguish between initial resource submission and subsequent modifications to correctly enforce immutability contracts without blocking legitimate creation requests.",
+    "examples": [
+      "Rule `self == oldSelf` fails on CREATE because oldSelf doesn't exist; use `has(oldSelf) && self != oldSelf` instead",
+      "Presence checks like `has(self.privateKeyAlgorithm)` evaluate true during CREATE when defaults apply, incorrectly triggering immutability rejection",
+      "IssuerRef validation that forbids field during CREATE while marking it required creates impossible constraint"
+    ],
+    "cluster_id": 2
+  },
+  {
+    "concern": "validation-defaulting-interaction",
+    "guideline": "Design CEL validation rules to execute correctly regardless of when defaulting occurs in the admission chain. Prefer compatibility checks over presence/absence requirements to avoid race conditions with defaulting webhooks.",
+    "rationale": "Validation rules execute at unpredictable points relative to defaulting logic, meaning fields may or may not have default values materialized when validation runs. Presence-based rules that assume defaults are not yet applied will spuriously reject valid CREATE operations. Relying on per-field immutability with oldSelf checks and conditional compatibility validation is more robust and aligns with Kubernetes API conventions.",
+    "examples": [
+      "Presence rules for PrivateKey fields block creation when defaults auto-apply; remove presence checks, retain compatibility rules only",
+      "Algorithm/size compatibility checks should be conditional on field presence rather than requiring field absence",
+      "Validation ordering issues where presence checks execute before defaults cause CREATE failures"
+    ],
+    "cluster_id": 2
+  },
+  {
+    "concern": "cross-field-validation-strictness",
+    "guideline": "Encode domain-specific cross-field constraints directly in CRD schemas using XValidation rules to fail fast at admission time rather than deferring to controller runtime.",
+    "rationale": "Catching invalid field combinations at admission provides immediate user feedback and prevents misconfigured resources from entering the cluster. Declarative schema validation is self-documenting and more maintainable than imperative controller checks. This approach improves upgrade safety by rejecting bad configurations before they propagate to dependent resources or cause deployment failures.",
+    "examples": [
+      "Enforce algorithm-specific key size constraints (ECDSA cannot use 2048-bit, RSA cannot use 256-bit) via CEL rules",
+      "Validate privateKeyAlgorithm and privateKeySize compatibility at admission to prevent runtime failures",
+      "Allow explicit zero values to preserve backward compatibility while enforcing constraints on non-zero values"
+    ],
+    "cluster_id": 2
+  },
+  {
+    "concern": "condition-evaluation-completeness",
+    "guideline": "When evaluating status conditions for health or degradation, iterate through all relevant condition types rather than short-circuiting on the first match. Design condition matching logic to handle multiple conditions per operand comprehensively.",
+    "rationale": "Exiting condition checks after finding the first degradation type creates false negatives where the system reports healthy while other degradation conditions remain unexamined. This masks real operational problems during upgrades or runtime and undermines reliability. The data model must not implicitly assume single conditions per operand without enforcement, as this makes code fragile to future condition additions.",
+    "examples": [
+      "Code matching '-static-resources-Degraded' stops without evaluating '-deploymentDegraded', missing deployment-level issues",
+      "Health check mechanism could report healthy status while deployment degradation exists",
+      "Need comprehensive iteration over condition types per operand rather than first-match logic"
+    ],
+    "cluster_id": 2
+  },
+  {
+    "concern": "configuration-scoping-safety",
+    "guideline": "Establish explicit configuration hierarchy and scoping rules to prevent local values from inadvertently shadowing global settings. Document and enforce precedence order to make timeout and threshold behaviors predictable.",
+    "rationale": "Local configuration values that silently override global defaults without clear intent create non-obvious behavior that degrades maintainability and causes operational surprises. Insufficient wait times from accidental overrides lead to premature health checks that can block legitimate deployments or cause flaky tests. Clear scoping rules improve ease-of-use and upgrade safety by making configuration effects predictable across operational contexts.",
+    "examples": [
+      "Local timeout of 5 seconds inadvertently overrides global value, causing premature health verification failures",
+      "Insufficient wait times cause race conditions during operator reconciliation windows",
+      "Configuration structure allows shadowing without warning, making behavior non-obvious to developers"
+    ],
+    "cluster_id": 2
+  },
+  {
+    "concern": "immutability-semantic-precision",
+    "guideline": "Distinguish between true immutability, append-only semantics, and conditional immutability in both validation logic and API documentation. Implement validation that exactly matches documented behavior and prevents state contradictions.",
+    "rationale": "Mismatches between documented immutability guarantees and actual validation create dangerous ambiguity where users may unknowingly modify protected fields or become confused when operations succeed despite immutable labeling. Unclear semantics lead to production incidents and complicate automation. Validation must prevent impossible states like append-only lists that cannot shrink but have maximum size constraints.",
+    "examples": [
+      "NetworkPolicies documented as immutable but validation only prevents shrinkage, allowing modification of existing entries",
+      "Immutability rule on networkPolicies should only apply after defaultNetworkPolicy is enabled, not before",
+      "Append-only revision list with MaxItems=10 creates irreconcilable state when list fills and old entries cannot be removed"
+    ],
+    "cluster_id": 2
+  },
+  {
+    "concern": "validation-functional-correctness",
+    "guideline": "Require envtest-based functional tests for all CEL validation rules before merging. Tests must verify both rejection of invalid input and acceptance of all legitimate configurations, including edge cases like empty values with specific semantics.",
+    "rationale": "CEL validation is executed at admission time with no runtime feedback, making pre-deployment testing critical for correctness. Without functional tests, broken validation rules can ship that either reject valid user input or fail to catch invalid configurations. Establishing testing patterns for the first CEL validation creates a maintainable foundation for future rules and ensures safe modification during upgrades.",
+    "examples": [
+      "First CEL-based API validation in operator requires envtest verification pattern",
+      "Empty egress rules incorrectly rejected despite being documented deny-all policy behavior",
+      "Need tests covering default value application, field presence/absence, and UPDATE vs CREATE scenarios"
+    ],
+    "cluster_id": 2
+  },
+  {
+    "concern": "validation-logic-reusability",
+    "guideline": "Extract validation logic into shared utility functions rather than duplicating inline implementations. Centralize validation rules to ensure consistency across callsites and improve testability.",
+    "rationale": "Duplicated validation logic creates maintenance burden and risks divergent behavior where different code paths apply inconsistent rules, potentially causing state corruption or security issues. Centralized validation functions serve as single sources of truth, can be comprehensively tested in isolation, and automatically propagate updates to all consumers without requiring changes at multiple callsites.",
+    "examples": [
+      "Extract repeated validation logic into reusable utility function",
+      "Shared validation ensures consistent behavior across all callsites",
+      "Independent testing of validation utilities improves correctness guarantees"
+    ],
+    "cluster_id": 2
+  },
+  {
+    "concern": "resource-pattern-consistency",
+    "guideline": "Align leader election and operational resource patterns with existing controller conventions. Document which namespaces and resource types are used for leases, ConfigMaps, and coordination to maintain consistency across the operator ecosystem.",
+    "rationale": "Consistent resource patterns enable uniform monitoring, RBAC policies, and debugging procedures across controllers. Deviating from established patterns complicates troubleshooting and creates upgrade risks during rolling updates where lease management changes could cause split-brain scenarios. Namespace choices affect multi-tenancy boundaries and access control, making documentation critical for operational safety.",
+    "examples": [
+      "Leader election should create lease resources in operator namespace following existing controller patterns",
+      "Understanding resource types used for coordination prevents conflicts during failover",
+      "Consistent patterns reduce operational complexity and support burden"
+    ],
+    "cluster_id": 2
+  },
+  {
+    "concern": "upgrade-safety",
+    "guideline": "Use explicit skip directives and intermediate version requirements to enforce safe upgrade paths and prevent transitions through or to buggy releases",
+    "rationale": "Upgrade graphs must account for known defects in specific versions by blocking direct jumps and requiring intermediate stops. This defensive approach prevents users from encountering critical bugs during version transitions, even if it introduces operational complexity. Preserving skip fields and workarounds for historical bugs is an acceptable maintainability tradeoff when it protects production stability.",
+    "examples": [
+      "Non-standard z-stream upgrade path to circumvent OCPBUGS-56758 for users on 1.15.1 or earlier",
+      "Mandatory intermediate upgrade through 1.13.1 before reaching 1.14.0 to handle breaking changes incrementally",
+      "Preserving skips field to prevent upgrades through known buggy versions"
+    ],
+    "cluster_id": 5
+  },
+  {
+    "concern": "maintainability",
+    "guideline": "Extract duplicated test logic into shared utility functions and maintain centralized implementations rather than copy-pasted code",
+    "rationale": "Code duplication across test suites creates maintenance burden and risks divergent behavior over time. Shared utilities ensure consistent testing patterns, make bug fixes propagate uniformly, and improve discoverability for developers. Centralized implementations serve as canonical references that reduce cognitive load when understanding or modifying test infrastructure.",
+    "examples": [
+      "Request to extract repeated logic across multiple test suites into a shared utility function",
+      "Refactoring condition matchers with dedicated unit tests to document expected behavior",
+      "Cleaning up condition matcher usage to make test failures more informative"
+    ],
+    "cluster_id": 5
+  },
+  {
+    "concern": "correctness",
+    "guideline": "Validate timeout and configuration changes across the full test matrix before merging to prevent cascading failures from unintended side effects",
+    "rationale": "Seemingly isolated changes to test infrastructure parameters can have unexpected ripple effects across multiple suites due to tight coupling. Insufficient validation leads to context deadline errors and false failures that erode CI/CD reliability. Reverting to empirically validated baseline values is preferred over aggressive optimizations that haven't been proven across all execution environments.",
+    "examples": [
+      "5-second timeout causing context deadline exceeded errors across multiple test suites",
+      "Reversion to older timeout values that were empirically validated and represented proven baselines",
+      "Regression introduced during refactoring where condition matching logic was accidentally modified"
+    ],
+    "cluster_id": 5
+  },
+  {
+    "concern": "ease-of-use",
+    "guideline": "Use API-based object creation for simple dynamic resources and template-based creation for large static configurations; avoid excessive templating that obscures intent",
+    "rationale": "Template files become unwieldy when simple objects require many runtime values, creating maintenance burden and reducing clarity. Programmatic construction provides type safety, better discoverability, and easier extensibility for dynamic configurations. A hybrid approach requires clear guidelines on when to use each pattern, but scoped incremental refactoring mitigates risk.",
+    "examples": [
+      "Shift from WithTemplateValues/CreateFromFile to API-based creation for simple objects like issuers and certificates",
+      "Scoped evaluation of only testdata/acme directory to avoid risky wholesale changes",
+      "Better error messaging when condition matching fails to help developers quickly identify issues"
+    ],
+    "cluster_id": 5
+  },
+  {
+    "concern": "test-infrastructure",
+    "guideline": "Isolate test suite configurations to prevent tight coupling; allow independent timeout and parameter settings per suite rather than global defaults",
+    "rationale": "Shared global configurations create fragility where changes to one suite unexpectedly impact others. Independent timeout configuration per suite improves isolation, reduces flakiness, and allows tuning for specific test characteristics. This separation supports safer refactoring and clearer ownership of test reliability.",
+    "examples": [
+      "Timeout change cascading to multiple test suites causing failures due to insufficient wait-poll periods",
+      "Need for explicit timeout configuration per test suite rather than global values",
+      "Test environments maintaining separate version currency from production to reduce churn and improve stability"
+    ],
+    "cluster_id": 5
+  },
+  {
+    "concern": "feature-gating",
+    "guideline": "Enforce through automated tests that TechPreview and experimental features are disabled by default and require explicit opt-in",
+    "rationale": "Experimental features may have breaking changes, incomplete implementations, or stability risks unsuitable for production. Automated validation of the default-disabled state prevents accidental enablement during upgrades and serves as living documentation of security posture. This testing codifies the expected behavior and protects users from compatibility risks.",
+    "examples": [
+      "Test case validating TechPreview features are disabled by default to prevent accidental enablement",
+      "Automated enforcement of feature gating mechanism to protect production stability"
+    ],
+    "cluster_id": 5
+  },
+  {
+    "concern": "testing-philosophy",
+    "guideline": "Establish separate upgrade cadences for test infrastructure dependencies versus production components; prioritize test stability over aggressive version currency",
+    "rationale": "Test environments do not require the same version currency as production systems. Deliberate separation reduces CI/CD churn, improves test stability, and allows controlled validation of new dependency versions before production deployment. This sustainable approach balances staying reasonably current with avoiding unnecessary disruption from upstream changes.",
+    "examples": [
+      "Vault version in e2e tests not requiring same aggressive currency as production systems",
+      "Deliberate separation between test and production upgrade cadences to reduce pipeline churn",
+      "Validation of new versions in controlled test environments before production deployment"
+    ],
+    "cluster_id": 5
+  },
+  {
+    "concern": "extensibility",
+    "guideline": "Design test matchers and verification utilities with flexible matching semantics (MatchAny/MatchAll) and explicit unit test coverage to support future condition-checking scenarios",
+    "rationale": "Robust test infrastructure with well-defined matching patterns establishes a solid foundation for operator lifecycle management and reliable end-to-end testing. Dedicated unit tests document expected behavior and prevent regressions during refactoring. Flexible matching semantics improve extensibility by supporting diverse condition verification needs without requiring matcher rewrites.",
+    "examples": [
+      "Conditions matcher refactoring supporting both MatchAny and MatchAll patterns",
+      "Dedicated unit tests for verify function documenting expected behavior",
+      "Enhanced matcher providing foundation for safer operator state transition validation"
+    ],
+    "cluster_id": 5
+  },
+  {
+    "concern": "resource-conflict-prevention",
+    "guideline": "Maintain a centralized port allocation registry across all platform components to prevent port conflicts. Each service must declare its port usage, and changes must be validated against the full component inventory before merge.",
+    "rationale": "Port conflicts like the 9403 collision between cert-manager-controller health checks and new services create deployment-time failures that are difficult to debug in production. These conflicts can break existing deployments during upgrades when multiple services attempt to bind to the same port. Inadequate tracking of port assignments across components leads to runtime failures that affect service availability and monitoring capabilities.",
+    "examples": [
+      "Port 9403 conflict where health check endpoint collides with new service allocation",
+      "Use named ports in both implementation and documentation to create single source of truth and prevent configuration drift between ServiceMonitor and actual service definitions"
+    ],
+    "cluster_id": 3
+  },
+  {
+    "concern": "validation-strictness",
+    "guideline": "Implement CEL-based cross-field validation rules in CRDs for all interdependent configuration parameters. Validation must fail fast at admission time, not runtime, and should catch invalid combinations before persistence.",
+    "rationale": "Cross-field validation prevents invalid configurations like incompatible privateKeyAlgorithm and privateKeySize combinations from being persisted to the cluster. Catching errors at admission time rather than runtime significantly improves operator experience and prevents deployments from entering invalid states. CEL validation keeps logic declarative within CRD schemas rather than requiring separate webhook code, improving maintainability.",
+    "examples": [
+      "CEL rules enforcing compatibility between privateKeyAlgorithm and privateKeySize to prevent RSA with elliptic curve key sizes",
+      "Immutability constraints for defaultNetworkPolicy and networkPolicies fields must use x-kubernetes-validations, not just documentation",
+      "Minimum replica count validation (minimum:1) in CRD schema to prevent scale-to-zero scenarios that render operators non-functional"
+    ],
+    "cluster_id": 3
+  },
+  {
+    "concern": "upgrade-safety",
+    "guideline": "When promoting features from TechPreview to GA or changing defaults, remove all legacy configuration paths, update all test suites to validate both new installations and upgrade scenarios, and explicitly document behavior changes.",
+    "rationale": "Transitioning features to default-on behavior requires comprehensive validation to ensure no regressions for existing clusters upgrading from previous versions. Legacy configuration paths and samples create user confusion and technical debt if not cleaned up. Default behavior changes impact all downstream integrations and must be thoroughly tested across upgrade paths.",
+    "examples": [
+      "IstioCSR promotion to GA requiring cleanup of TechPreview samples and validation across test suites for upgrade scenarios",
+      "Overly strict presence validation rules on Bundle CRD PrivateKey field blocking CREATE operations must be scoped to updates only to preserve upgrade compatibility"
+    ],
+    "cluster_id": 3
+  },
+  {
+    "concern": "api-compatibility",
+    "guideline": "Avoid extending API surfaces to couple unrelated features. Keep concerns separated with clear ownership boundaries, even if it introduces minor configuration duplication. Document the separation rationale clearly.",
+    "rationale": "Preventing unnecessary coupling between features like network policy management and certificate management preserves flexibility and simplifies upgrade paths with fewer interdependencies. API bloat makes maintenance harder and locks features into specific implementation approaches. Separation allows each operator to evolve independently and prevents breaking changes from cascading across components.",
+    "examples": [
+      "Not requiring IstioCSR when creating default network policies to keep these concerns separated",
+      "Maintaining separate logLevel configuration in istiocsr.openshift.io rather than sharing with certmanager.operator.openshift.io to preserve clear ownership boundaries"
+    ],
+    "cluster_id": 3
+  },
+  {
+    "concern": "documentation-accuracy",
+    "guideline": "Synchronize all documentation examples, field comments, and inline documentation with actual code constraints. Use named references instead of hardcoded values. Validate that enum restrictions match descriptive comments.",
+    "rationale": "Mismatched documentation creates confusion, support burden, and potential monitoring failures when operators use outdated examples as templates. Field comments that suggest capabilities beyond actual validation constraints mislead developers about extensibility. Documentation must be the single source of truth that accurately reflects runtime behavior and API contracts.",
+    "examples": [
+      "Using named ports in documentation examples instead of hardcoded port numbers to prevent drift",
+      "Field comment referencing 'different cert-manager components' (plural) while enum validation restricts to only CoreController (singular)",
+      "Keeping log level naming conventions consistent with established patterns like {Normal, Debug, Trace, TraceAll} across all components"
+    ],
+    "cluster_id": 3
+  },
+  {
+    "concern": "fail-fast-validation",
+    "guideline": "Retain early validation of configurations even when technically optional, prioritizing upfront error detection over minimal code. Explicitly document performance impact as negligible when validation overhead is lightweight.",
+    "rationale": "Upfront validation catches configuration errors before deployment rather than during runtime, significantly improving operator experience. Lightweight validation with negligible performance impact is a reasonable tradeoff for fail-fast principles. Early detection allows operators to correct issues immediately rather than troubleshooting production failures.",
+    "examples": [
+      "Retaining CA configuration validation despite being optional because it catches errors with negligible performance cost",
+      "Validating replica count at schema level rather than allowing invalid scale-to-zero configurations to be applied"
+    ],
+    "cluster_id": 3
+  },
+  {
+    "concern": "correctness",
+    "guideline": "Never silently ignore errors from validation or configuration parsing functions. Explicitly handle all error conditions and ensure dependent resources are correctly labeled when using filtered caches.",
+    "rationale": "Silently ignored errors mask misconfigurations that would surface during refactoring or upgrades. Dependencies on label selectors for cache filtering require verification that all managed resources apply labels consistently through centralized helpers. Missing error handling creates hidden failure modes that degrade system reliability.",
+    "examples": [
+      "Error from labels.NewRequirement being silently ignored would mask misconfigurations if label key changes",
+      "Consolidating to single manager cache with label selectors requires verification that all managed objects (Deployment, Certificate, Service, ServiceAccount, RBAC) are labeled via centralized functions",
+      "Missing import for math/big package needed for certificate serial number generation would cause runtime panics"
+    ],
+    "cluster_id": 3
+  },
+  {
+    "concern": "consistency",
+    "guideline": "Maintain uniform naming conventions, constant formats, and configuration patterns across all components. Divergence requires explicit architectural justification documented in code comments.",
+    "rationale": "Inconsistent patterns force operators to remember different vocabularies across components and fragment automation scripts. Mixed constant formats increase cognitive load and error likelihood for contributors. Uniform conventions reduce maintenance burden and prevent breaking changes to tooling that assumes consistent behavior.",
+    "examples": [
+      "vaultAuthPathKubernetes and vaultAuthPathJWT using full /v1/auth/... format while vaultAuthPathAppRole uses only mount name creates confusion",
+      "Log level naming must align across cert-manager-operator codebase rather than introducing divergent vocabularies",
+      "Documentation patterns should consistently follow established approaches like existing cert-manager documentation"
+    ],
+    "cluster_id": 3
+  },
+  {
+    "concern": "dependency-management",
+    "guideline": "Declare all dependencies explicitly before they are needed, even for preparatory work. Avoid version bumps that break existing tooling unless benefits clearly outweigh maintenance costs; document technical debt when deferring upgrades.",
+    "rationale": "Explicit dependency declaration prevents build failures and makes code requirements transparent. Deferring version upgrades to preserve existing workflow stability is pragmatic short-term but creates technical debt that complicates future refactoring. Decisions to maintain older tooling versions should be explicitly documented with rationale.",
+    "examples": [
+      "Adding math/big import proactively before certificate generation implementation to prevent future build failures",
+      "Using bash loop instead of yq -s to avoid yq version bump that would break cert-manager manifest updates, with recognition this creates technical debt"
+    ],
+    "cluster_id": 3
+  },
+  {
+    "concern": "code-generation-hygiene",
+    "guideline": "Never manually edit generated code in pkg/operator or similar directories. Always modify source schemas and regenerate using `make generate` or `make update`. Verify generated artifacts (e.g., bindata.go) are synchronized before merging.",
+    "rationale": "Manual edits to generated files are overwritten on the next generation cycle, creating maintenance problems and inconsistencies. Stale generated files cause runtime behavior mismatches with intended configurations, affecting correctness and upgrade safety. Proper synchronization ensures reproducible builds and prevents deployment of incorrect configurations during operator upgrades.",
+    "examples": [
+      "Changes in pkg/operator must go through `make generate` workflow",
+      "Verify bindata.go regeneration produces no diff after running generation commands",
+      "Reject PRs with manual edits to generated files; redirect contributors to modify source definitions"
+    ],
+    "cluster_id": 6
+  },
+  {
+    "concern": "api-validation",
+    "guideline": "Use CEL (Common Expression Language) for cross-field validation rules in API schemas. Enforce minimum length constraints on required string fields (Name, Key) to prevent empty-string configurations. Validate field interdependencies (e.g., private key algorithm and size compatibility) at admission time.",
+    "rationale": "Declarative CEL validation centralizes logic in API schemas, making it self-documenting and easier to audit than scattered imperative checks. Catching invalid configurations at admission time prevents runtime failures and reduces unnecessary controller reconciliation attempts. Validation rules versioned with the API ensure backward compatibility guarantees are explicit during upgrades.",
+    "examples": [
+      "Use CEL to enforce that RSA keys have valid size constraints for the algorithm",
+      "Add minLength:1 validation to ConfigMapReference.Name and ConfigMapReference.Key to reject empty strings",
+      "Require comprehensive unit tests for all CEL validation expressions before merging"
+    ],
+    "cluster_id": 6
+  },
+  {
+    "concern": "api-evolution",
+    "guideline": "Defer strict validation rules (especially regex patterns) until requirements are well-understood and comprehensive test coverage exists. Use pointer types (*Type) for optional API fields to distinguish between unset (nil) and explicitly-set zero values. Align field names and validation with approved enhancement proposals before implementation.",
+    "rationale": "Premature API constraints create breaking changes when requirements evolve. Pointer types prevent ambiguity between omitted fields and zero values, supporting backward compatibility when adding fields with defaults. Synchronizing with enhancement proposals ensures community-vetted design decisions and prevents divergent implementations that become technical debt.",
+    "examples": [
+      "Remove regex validation lacking test coverage; defer to future release with proper testing",
+      "Use *bool instead of bool for optional feature flags to detect unset vs false",
+      "Update field names to match enhancement proposal decisions before GA to avoid compatibility breaks"
+    ],
+    "cluster_id": 6
+  },
+  {
+    "concern": "upgrade-safety",
+    "guideline": "Always use the latest patch release within a minor version for dependencies (e.g., Go 1.24.8 over 1.24.6). Document validation changes in release notes, as stricter rules may reject previously-accepted configurations. Verify that existing deployments won't break when tightening validation or changing defaults.",
+    "rationale": "Latest patch releases contain critical security fixes (especially for crypto/tls, crypto/x509, database/sql) with minimal breaking change risk. Validation tightening can reject invalid-but-previously-accepted configurations, requiring migration paths. Clear communication prevents upgrade failures and allows operators to plan validation warning periods.",
+    "examples": [
+      "Upgrade to Go 1.24.8 to include security patches for archive/tar, crypto/tls, and crypto/x509",
+      "Add release note warnings when enforcing minLength constraints that could reject empty strings",
+      "Test validation changes against existing CRD instances to identify potential upgrade blockers"
+    ],
+    "cluster_id": 6
+  },
+  {
+    "concern": "pr-hygiene",
+    "guideline": "Include only changes relevant to the PR's stated purpose. Cross-reference related design discussions and enhancement proposals with explicit links. Provide context in commit messages explaining what changed and why, not just commit hashes.",
+    "rationale": "Mixing unrelated changes undermines code review effectiveness and obscures git history, making rollbacks and debugging difficult. Cross-references create audit trails for architectural decisions, preserving institutional knowledge. Contextual commit messages reduce cognitive load for future contributors who need to understand change rationale without excavating discussion threads.",
+    "examples": [
+      "Move scripts committed to wrong PR (e.g., script belonging in #309) to their intended PR for proper context",
+      "Reference enhancement proposal discussions when API changes align with formalized decisions",
+      "Summarize changes in comments rather than only providing commit hashes like 'Updated in commit abc123'"
+    ],
+    "cluster_id": 6
+  },
+  {
+    "concern": "configuration-consistency",
+    "guideline": "Align operand log levels and configuration schemas with the operand's native definitions. Document any custom mappings explicitly or eliminate them in favor of pass-through configuration. Use typed structs with boolean fields for feature gates rather than string-based enumerations.",
+    "rationale": "Custom mappings between operator and operand configurations create documentation burden and risk semantic drift as the operand evolves. Typed boolean fields provide compile-time safety, IDE discoverability, and clearer CEL validation than string enumerations. Pass-through configuration reduces cognitive overhead for administrators and prevents silent breakage when operand definitions change.",
+    "examples": [
+      "Document operator-to-operand log level mapping explicitly or inherit directly from operator configuration",
+      "Replace feature name strings with struct { FeatureA *bool; FeatureB *bool } for type safety and discoverability",
+      "Clarify that ConfigMapReference.Key refers to .data section, not binaryData, to prevent ambiguity"
+    ],
+    "cluster_id": 6
+  },
+  {
+    "concern": "resource-efficiency",
+    "guideline": "Defer enabling controllers by default until GA maturity and real-world performance data justifies the resource cost. Profile idle controller overhead before making features universally available.",
+    "rationale": "Running unnecessary controllers consumes cluster CPU and memory even when idle, affecting multi-tenant environments. Deferring default enablement during alpha/beta phases preserves upgrade safety by avoiding premature resource allocation patterns. Performance profiling with real workloads informs better decisions than assumptions, balancing ease-of-use against efficiency.",
+    "examples": [
+      "Keep addon controllers opt-in during beta; enable by default only after measuring idle resource consumption",
+      "Gather real-world usage data before deciding whether to run controllers for all users vs subset",
+      "Document resource requirements for optional controllers to help operators make informed decisions"
+    ],
+    "cluster_id": 6
+  },
+  {
+    "concern": "test-coverage",
+    "guideline": "Require unit tests for all CEL validation rules, cross-field validation logic, and API schema constraints before merging. Do not remove existing validation without equivalent test coverage demonstrating the removal is safe.",
+    "rationale": "Without automated tests, validation changes risk rejecting valid inputs or accepting invalid ones, with no regression detection. Removing validation due to insufficient test coverage creates technical debt where runtime errors replace admission-time failures. Comprehensive tests document intended behavior and enable confident refactoring during future API evolution.",
+    "examples": [
+      "Add unit tests verifying CEL rules correctly validate algorithm/size compatibility before merging",
+      "Do not remove regex pattern validation without tests proving the patterns were incorrect or unnecessary",
+      "Test that minimum length constraints reject empty strings while accepting valid single-character values"
+    ],
+    "cluster_id": 6
+  },
+  {
+    "concern": "correctness",
+    "guideline": "Verify type assumptions before refactoring (e.g., string vs boolean comparisons). Challenge unnecessary commits by testing in isolated environments. Ensure changes resolve actual problems rather than perceived issues.",
+    "rationale": "Incorrect type assumptions lead to unnecessary refactoring that introduces bugs or breaking changes. Empirical testing prevents changes based on faulty premises, reducing technical debt from solving non-existent problems. Verification ensures code changes provide actual value rather than complicating maintenance.",
+    "examples": [
+      "Confirm DefaultNetworkPolicy is string type before changing string comparison to boolean check",
+      "Test rebase scenarios in isolation to verify whether problematic commits are actually necessary",
+      "Resolve false alarms through verification rather than unnecessary code changes"
+    ],
+    "cluster_id": 6
+  },
+  {
+    "concern": "upgrade-safety",
+    "guideline": "Maintain consistent toolchain versions (e.g., Go runtime) across operator and operand repositories using documented, automated synchronization mechanisms.",
+    "rationale": "Version drift between operator and operand build environments creates subtle compatibility issues and build failures during upgrades. Without automated propagation and clear ownership of version updates, future maintainers struggle to understand the update procedure. Architectural decisions captured only in Slack threads are not discoverable and hinder contributor onboarding.",
+    "examples": [
+      "Establish explicit `<carry>` patch strategy in forked repositories (e.g., jetstack-cert-manager) for Go version alignment",
+      "Document version synchronization process in repository README or CONTRIBUTING.md rather than relying on tribal knowledge",
+      "Use CI checks to enforce Go version parity between operator and operand builds"
+    ],
+    "cluster_id": 7
+  },
+  {
+    "concern": "upgrade-safety",
+    "guideline": "Preserve stable resource identifiers (lease names, image tags, API object names) across versions to prevent coordination failures during rolling upgrades.",
+    "rationale": "Changing leader election lease names between versions causes multiple instances to claim leadership simultaneously, breaking distributed coordination guarantees and causing reconciliation conflicts. Image tag conventions like `latest` enable automated CI substitution; deviating creates manual synchronization overhead and fragile coupling. Stable identifiers ensure exactly-one-leader semantics and reliable automation throughout the upgrade lifecycle.",
+    "examples": [
+      "Use version-independent lease names or implement explicit migration logic (e.g., 'istiocsrs' \u2192 'certmanagers' transition broke leader election)",
+      "Maintain `latest` image tag convention to preserve CI automation that substitutes image references during testing",
+      "Validate that identifier changes do not create split-brain scenarios during version skew periods"
+    ],
+    "cluster_id": 7
+  },
+  {
+    "concern": "maintainability",
+    "guideline": "Automate manifest and code generation through versioned tooling (`make generate`, jsonnet, kustomize) rather than manual editing, even when rebasing creates overhead.",
+    "rationale": "Manual manifest management introduces human error and inconsistency across upstream updates. Automated generation through repeatable tooling creates auditable, reproducible build processes that ensure all changes are captured during upstream rebases. While maintaining patches between upstream and forked repositories creates rebase burden, automation prevents missed manifest changes and establishes traceable deviation from upstream.",
+    "examples": [
+      "Use `helm --dry-run` with jsonnet filtering to generate OpenShift-specific manifests from upstream cert-manager charts",
+      "Accept that vendored code-generators may produce broader changes than desired, but maintain generation pipeline integrity",
+      "Enforce `make generate` in CI to prevent hand-edited files from diverging from source templates"
+    ],
+    "cluster_id": 7
+  },
+  {
+    "concern": "maintainability",
+    "guideline": "Document architectural decisions and design rationale inline or in enhancement proposals, not just in external channels.",
+    "rationale": "Design choices explained only through Slack threads or verbal communication become lost institutional knowledge. Inline documentation preserves rationale for constraints, assumptions, and patterns, preventing unnecessary refactoring or accidental removal during future modifications. This is critical in operator contexts where upgrade behavior and API contracts must remain consistent across versions.",
+    "examples": [
+      "Reference Enhancement Proposal (EP) numbers in code comments when implementing API changes",
+      "Add comments explaining why certain controller patterns or validation rules exist",
+      "Capture commit organization rationale (e.g., why CRD changes are grouped together) in commit messages"
+    ],
+    "cluster_id": 7
+  },
+  {
+    "concern": "correctness",
+    "guideline": "Implement watches on managed resources (NetworkPolicy, Secrets, etc.) to enable drift detection and automatic reconciliation rather than relying on periodic sync alone.",
+    "rationale": "Adding resource watches allows controllers to detect and correct configuration drift when resources are modified or deleted outside normal operation. This self-healing mechanism reduces manual intervention requirements and ensures desired state is maintained during cluster operations or upgrades. The minor performance overhead from additional event processing is justified by reliability gains.",
+    "examples": [
+      "Add NetworkPolicy watches to detect when policies are modified outside controller operation",
+      "Use WatchesMetadata for resources like Secrets where only metadata changes trigger reconciliation",
+      "Configure filtered informers via ByObject for frequently accessed types to reduce cache bloat"
+    ],
+    "cluster_id": 7
+  },
+  {
+    "concern": "correctness",
+    "guideline": "Fix YAML templating syntax errors and enforce validation (yamllint, quoted values) to prevent deployment failures and type coercion issues.",
+    "rationale": "Helm template conditionals placed inline rather than on separate lines cause parsing failures. Unquoted template values create type coercion unpredictability across Kubernetes versions. Standardized quoting and formatting improve template readability and reduce cognitive load while ensuring consistent rendering behavior during deployments and upgrades.",
+    "examples": [
+      "Place Helm conditionals on separate lines rather than inline to avoid YAML parsing errors",
+      "Quote all template variable substitutions to prevent numeric/boolean coercion",
+      "Run yamllint validation in CI to catch formatting issues before deployment"
+    ],
+    "cluster_id": 7
+  },
+  {
+    "concern": "config-safety",
+    "guideline": "Use append-only constraints with explicit limits for configuration lists where deletion could break active references or rollback capabilities.",
+    "rationale": "Preventing deletion of configuration entries (e.g., revision lists) avoids breaking references to resources currently in use by the system. This enhances upgrade safety during rollouts and rollbacks by ensuring backward compatibility. Hard caps (e.g., 10 items) prevent unbounded growth while requiring clear operational procedures when limits are reached.",
+    "examples": [
+      "Implement append-only validation for revision lists with maxItems=10 to preserve rollback history",
+      "Document procedures for managing configuration when append-only limits are reached",
+      "Prevent user deletion of entries that may be referenced by active deployments"
+    ],
+    "cluster_id": 7
+  },
+  {
+    "concern": "config-safety",
+    "guideline": "Deploy only patched versions of dependencies; reject versions with known CVEs even for minor/patch updates.",
+    "rationale": "Introducing dependencies with known security vulnerabilities creates immediate technical debt and compliance failures. Patch versions typically maintain compatibility without architectural complexity, making security-driven upgrades low-risk. Vulnerable versions necessitate urgent follow-up patching and increase attack surface unnecessarily.",
+    "examples": [
+      "Reject Vault 1.19.0 due to CVE-2025-3879 and CVE-2025-4656; require 1.19.6+ or 1.21.0",
+      "Automate CVE scanning in CI to block merges introducing vulnerable dependency versions",
+      "Establish policy requiring latest patch version within approved minor version range"
+    ],
+    "cluster_id": 7
+  },
+  {
+    "concern": "performance-tradeoff",
+    "guideline": "Stratify resource caching into filtered informers (ByObject), metadata-only watches (WatchesMetadata), and uncached Get calls to balance memory footprint against API latency.",
+    "rationale": "Caching all resources bloats controller memory unnecessarily. Filtered informers reduce footprint for frequently accessed types; metadata-only watches suffice for trigger-based reconciliation; uncached Gets are acceptable for infrequently accessed resources. Controller-runtime automatically creates informers for watched types, removing manual management burden while introducing API call latency tradeoffs.",
+    "examples": [
+      "Use ByObject with label selectors for frequently reconciled resources to cache only relevant subset",
+      "Apply WatchesMetadata for Secrets and ConfigMaps where only metadata triggers reconciliation",
+      "Accept uncached Get calls for unlabeled resource types accessed infrequently"
+    ],
+    "cluster_id": 7
+  },
+  {
+    "concern": "api-compatibility",
+    "guideline": "Document backward compatibility strategy, deprecation timelines, and migration paths when implementing API changes per enhancement proposals.",
+    "rationale": "API modifications impact how systems extend or integrate with components. Following enhancement proposals ensures design consistency and stakeholder alignment, but versioning strategy and deprecation timelines must be explicit to prevent blocking user upgrades. Clear migration paths reduce operational burden and maintain user confidence during version transitions.",
+    "examples": [
+      "Include API versioning strategy (v1alpha1 \u2192 v1beta1 \u2192 v1) and supported version skew in enhancement proposals",
+      "Provide conversion webhooks or migration tools when introducing breaking API changes",
+      "Validate that changes between versions (e.g., 1.13.0 \u2192 1.14.0) do not prevent seamless upgrades"
+    ],
+    "cluster_id": 7
+  },
+  {
+    "concern": "ease-of-use",
+    "guideline": "Prefer upstream community operators and official images over custom builds unless specific technical requirements cannot be met; document justification when deviation is necessary.",
+    "rationale": "Custom images require ongoing rebuild effort, patching, and synchronization with upstream security updates. Community operators provide automated updates and established upgrade channels, reducing operational burden. Diverging from standard upstream creates compatibility issues during cluster upgrades and makes it harder to follow supported upgrade paths.",
+    "examples": [
+      "Question custom Vault image usage when community operator catalog provides maintained alternative",
+      "Document specific technical requirements (e.g., OpenShift-specific patches) that justify custom builds",
+      "Establish process for synchronizing custom builds with upstream security releases"
+    ],
+    "cluster_id": 7
+  },
+  {
+    "concern": "validation-strictness",
+    "guideline": "Apply principle of least privilege in RBAC definitions; use scoped permissions matching documented component requirements rather than cluster-admin shortcuts.",
+    "rationale": "Granting cluster-admin masks actual permission requirements, making them opaque for auditing and creating production deployment risks. While overly permissive roles simplify installation, they undermine testing fidelity by not representing stricter production RBAC policies. Component-specific ClusterRoles improve security posture and make permission boundaries explicit.",
+    "examples": [
+      "Replace cluster-admin grant to Vault installer ServiceAccount with scoped ClusterRoles for server, injector, CSI, and operator components",
+      "Reference upstream Helm chart RBAC definitions to identify minimal required permissions",
+      "Test installation with scoped permissions to surface actual requirements rather than hiding behind cluster-admin"
+    ],
+    "cluster_id": 7
+  },
+  {
+    "concern": "api-compatibility",
+    "guideline": "API schema validation constraints must exactly match documented behavior; do not allow CRD schemas to accept values that controller logic rejects or document capabilities that validation prevents.",
+    "rationale": "Misalignment between CRD schemas, documentation, and controller implementation creates a confusing user experience where configurations pass initial validation but fail during reconciliation. This delayed failure mode undermines trust in the API contract and complicates troubleshooting. Schema validation should be the first line of defense, providing immediate feedback rather than allowing invalid configurations to reach the controller layer.",
+    "examples": [
+      "IstioCSR declared in ComponentName enum and accepted by CRD but explicitly rejected by controller validation logic",
+      "istioCACertificate namespace field documented as allowing empty values but schema enforces minLength: 1",
+      "Documentation claiming 253-character limit while schema enforces 63-character maximum for namespace fields"
+    ],
+    "cluster_id": 1
+  },
+  {
+    "concern": "upgrade-safety",
+    "guideline": "When converting optional fields to required or adding new required fields, implement mutating webhooks or migration logic to populate defaults before enforcing stricter validation; never break existing valid CRs during operator upgrades.",
+    "rationale": "Tightening validation without migration support forces manual intervention on every existing custom resource during upgrades, breaking zero-downtime upgrade paths and operational continuity. Users expect that valid configurations remain valid across operator versions unless explicitly deprecated with advance notice. Mutating webhooks provide automatic remediation that preserves upgrade safety while enabling better validation for new deployments.",
+    "examples": [
+      "Converting IstioCSRConfig from optional pointer to required value type without defaulting webhook causes validation failures for all existing CRs lacking this field",
+      "Removing IstioCSR from ComponentName enum requires migration handling for existing CRs that reference it"
+    ],
+    "cluster_id": 1
+  },
+  {
+    "concern": "validation-strictness",
+    "guideline": "Align validation constraints with Kubernetes standards and implement them at the earliest possible layer (CRD schema first, admission webhooks second, controller logic last); ensure all validation layers are consistent.",
+    "rationale": "Early validation provides immediate user feedback and prevents invalid state from entering the system. Layered validation with inconsistent rules creates confusion about actual constraints and makes debugging difficult. Following Kubernetes conventions (like 63-character DNS label limits for namespace names) ensures interoperability and meets user expectations.",
+    "examples": [
+      "Namespace field validation should enforce 63-character limit matching Kubernetes DNS label standards, not document 253 characters",
+      "IstioCSR component acceptance at CRD level but rejection at controller level delays error feedback until reconciliation",
+      "Validation logic accepting IstioCSR but pod selector and network policy controllers lacking implementation creates silent failures"
+    ],
+    "cluster_id": 1
+  },
+  {
+    "concern": "correctness",
+    "guideline": "Every component, feature, or enum value exposed in the API surface must have complete implementation across all relevant controllers, selectors, validators, and static assets; remove incomplete features from public APIs.",
+    "rationale": "Advertising capabilities without full implementation breaks the contract between API and runtime behavior, leading to user confusion and support burden. Incomplete features create technical debt and obscure which functionality is actually supported. If a feature is not ready for use, it should not appear in the API surface regardless of implementation progress.",
+    "examples": [
+      "IstioCSRComponent in enum without corresponding network policy controller logic, pod selector mapping, or validation handling",
+      "CRD accepting IstioCSR component but controller lacking reconciliation logic for it",
+      "Hardcoded istio-system namespace assumption without existence validation causes failures in clusters without Istio"
+    ],
+    "cluster_id": 1
+  },
+  {
+    "concern": "maintainability",
+    "guideline": "Use generic, purpose-driven naming for shared infrastructure rather than coupling names to specific features; establish single source of truth for validation rules and document them alongside API definitions.",
+    "rationale": "Feature-specific naming for generic infrastructure creates technical debt and complicates refactoring when extending functionality. Inconsistent naming patterns make codebases harder to understand for new contributors and future maintainers. Documentation-validation mismatches create confusion that must be constantly reconciled, increasing cognitive overhead.",
+    "examples": [
+      "Using 'istiocsrs' suffix for controller-runtime infrastructure that will be shared across operator instead of generic naming",
+      "Documentation claiming 253-character namespace limit while code enforces 63 creates ongoing reconciliation burden",
+      "Multiple validation layers with different rules requiring developers to check multiple locations to understand constraints"
+    ],
+    "cluster_id": 1
+  },
+  {
+    "concern": "ease-of-use",
+    "guideline": "Provide canonical sample CRs in config/samples for every API type; use explicit naming (like 'unsupported-addon-features') that sets proper expectations about feature stability and support boundaries.",
+    "rationale": "Sample CRs serve as living documentation that evolves with API changes and enables UI integration (like OpenShift Console alm-examples). Clear naming conventions for experimental features warn users about stability risks before adoption and prevent implicit support expectations. Both mechanisms reduce support burden and help users succeed with initial configuration.",
+    "examples": [
+      "Missing IstioCSR sample CR in config/samples prevents OpenShift Console inline examples and increases configuration errors",
+      "Renaming flag to '--unsupported-addon-features' explicitly signals that IstioCSR and similar features lack support guarantees",
+      "Empty namespace validation preventing documented use case forces users to provide unnecessary values"
+    ],
+    "cluster_id": 1
+  },
+  {
+    "concern": "extensibility",
+    "guideline": "When adding new components or features, implement complete integration (validation, controllers, network policies, selectors) before exposing in public API; defer incomplete work rather than advertising unsupported capabilities.",
+    "rationale": "Exposing partial implementations limits future flexibility by creating API surface that must be maintained or carefully deprecated. Users who adopt incomplete features create support obligations and upgrade constraints. Complete integration ensures that extending the system with new components follows consistent patterns and doesn't create special cases.",
+    "examples": [
+      "IstioCSR component requires validation logic, pod selector mapping, network policy controllers, and static assets before API exposure",
+      "Optional dependency on istio-system namespace needs existence checks and graceful fallback to avoid deployment scenario brittleness",
+      "Feature flags for experimental addons should establish pattern for managing unstable features without polluting stable API"
+    ],
+    "cluster_id": 1
+  }
+]
