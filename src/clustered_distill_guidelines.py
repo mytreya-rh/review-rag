@@ -28,14 +28,14 @@ def clean_output(text: str) -> str:
     return t.strip()
 
 
-def extract_json_array(text: str):
+def extract_json_object(text: str):
     """
-    Robustly extract the first top-level JSON array from Claude output.
+    Robustly extract the first top-level JSON object from Claude output.
     """
     cleaned = clean_output(text)
-    start = cleaned.find("[")
+    start = cleaned.find("{")
     if start == -1:
-        raise ValueError("❌ No '[' found in Claude output")
+        raise ValueError("❌ No '{' found in Claude output")
 
     depth = 0
     in_string = False
@@ -55,9 +55,9 @@ def extract_json_array(text: str):
 
         if c == '"':
             in_string = True
-        elif c == "[":
+        elif c == "{":
             depth += 1
-        elif c == "]":
+        elif c == "}":
             depth -= 1
             if depth == 0:
                 json_str = cleaned[start : i + 1]
@@ -68,7 +68,7 @@ def extract_json_array(text: str):
                     print(json_str[:500])
                     raise e
 
-    raise ValueError("❌ No matching ']' found for top-level JSON array")
+    raise ValueError("❌ No matching '}' found for top-level JSON object")
 
 
 # -------------------------------
@@ -308,12 +308,18 @@ def main():
             "- Emphasize upgrade-safety, maintainability, ease-of-use, performance tradeoffs,\n"
             "  correctness, extensibility, and API/validation contracts as applicable.\n\n"
             "Output format:\n"
-            "Return ONLY a JSON array. No markdown, no prose, no explanation.\n"
-            "Each element must be an object with fields:\n"
-            "  concern   - short label for the primary concern (e.g. 'upgrade-safety', 'correctness')\n"
-            "  guideline - clear directive phrased as a rule\n"
-            "  rationale - 2-4 sentences explaining why this matters\n"
-            "  examples  - concrete examples or patterns from the input situations\n\n"
+            "Return ONLY a JSON object with two fields. No markdown, no prose, no explanation.\n"
+            "{\n"
+            '  "cluster_name": "short-kebab-case-name describing the main theme (e.g., \'api-validation\', \'cel-rules\', \'upgrade-paths\')",\n'
+            '  "guidelines": [\n'
+            "    {\n"
+            "      \"concern\": \"short label for the primary concern\",\n"
+            "      \"guideline\": \"clear directive phrased as a rule\",\n"
+            "      \"rationale\": \"2-4 sentences explaining why this matters\",\n"
+            "      \"examples\": [\"concrete examples or patterns from the input situations\"]\n"
+            "    }\n"
+            "  ]\n"
+            "}\n\n"
             "Here is the input cluster data as JSON:\n\n"
             + json.dumps(context, indent=2)
         )
@@ -328,23 +334,31 @@ def main():
         log(f"Claude returned {len(raw)} characters for cluster {label}. Extracting JSON...")
 
         try:
-            guidelines = extract_json_array(raw)
+            result = extract_json_object(raw)
         except Exception as e:
             log(f"❌ Failed to extract JSON for cluster {label}: {e}")
             log("Raw (first 500 chars):")
             log(raw[:500])
             continue
 
+        # Extract cluster name and guidelines
+        if not isinstance(result, dict):
+            log(f"Cluster {label} returned non-dict JSON; skipping.")
+            continue
+
+        cluster_name = result.get("cluster_name", f"cluster-{label}")
+        guidelines = result.get("guidelines", [])
+
         if not isinstance(guidelines, list):
-            log(f"Cluster {label} returned non-list JSON; wrapping into a list.")
+            log(f"Cluster {label} guidelines field is not a list; wrapping.")
             guidelines = [guidelines]
 
         for g in guidelines:
             if isinstance(g, dict):
-                g.setdefault("cluster_id", int(label))
+                g["cluster_id"] = cluster_name
 
         all_guidelines.extend(guidelines)
-        log(f"Cluster {label}: extracted {len(guidelines)} guidelines")
+        log(f"Cluster {label} ('{cluster_name}'): extracted {len(guidelines)} guidelines")
 
     # 3) Save aggregated guidelines
     os.makedirs("data", exist_ok=True)
